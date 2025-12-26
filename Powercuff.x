@@ -1,5 +1,15 @@
-#import <Foundation/Foundation.h>
 #import <notify.h>
+#import <Foundation/Foundation.h>
+
+// --- ROOTLESS COMPATIBILITY MACRO ---
+#ifndef ROOT_PATH_NS
+#define ROOT_PATH_NS(path) \
+    ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? \
+    [@"/var/jb" stringByAppendingPathComponent:path] : path)
+#endif
+// ------------------------------------
+
+#import <UIKit/UIKit.h>
 
 // Forward declarations for the compiler
 @interface CommonProduct : NSObject
