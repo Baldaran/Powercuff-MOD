@@ -4,6 +4,7 @@
 #define kPowercuffModeKey "com.rpetrich.powercuff.mode"
 #define kPowercuffNotify "com.rpetrich.powercuff.update"
 
+// Forward declarations for SpringBoard classes
 @interface SBBacklightController : NSObject
 + (id)sharedInstance;
 - (BOOL)screenIsOn;
@@ -15,19 +16,21 @@
 
 static id currentTarget = nil;
 
-// EXECUTED INSIDE thermalmonitord
+// Function that runs inside thermalmonitord to apply the cap
 static void ApplyThermals() {
     int token;
-    uint64_t state;
-    notify_register_check(kPowercuffModeKey, &token);
-    notify_get_state(token, &state);
-    notify_close(token);
+    uint64_t state = 0;
+    
+    // Register to check the state, then cancel the token immediately to prevent leaks
+    if (notify_register_check(kPowercuffModeKey, &token) == NOTIFY_STATUS_OK) {
+        notify_get_state(token, &state);
+        notify_cancel(token); // THE FIX: notify_cancel instead of notify_close
+    }
 
     NSArray *modes = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
     
     if (currentTarget && state < [modes count]) {
         NSString *modeStr = modes[state];
-        // This is the call that actually limits the A11 hardware
         if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
             [currentTarget putDeviceInThermalSimulationMode:modeStr];
         }
@@ -54,23 +57,22 @@ static void ApplyThermals() {
 - (void)backlight:(id)backlight didCompleteUpdateToState:(long long)state {
     %orig;
     
-    // state 1 = Off, state 2+ = On
+    // state 1 = Off, state 2+ = On for iOS 16
     BOOL screenOn = (state > 1);
     
-    // Path for rootless preferences
+    // Load preferences for rootless
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist"];
     uint64_t userMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue];
     
-    // SMART LOGIC: If screen is off, force index 4 (Heavy/30% Cap). 
-    // Otherwise use user selected mode.
-    uint64_t target = screenOn ? userMode : 4; 
+    // If screen is off, force Heavy (index 4). If on, use daily mode.
+    uint64_t targetState = screenOn ? userMode : 4; 
     
-    // Write state to system register
     int token;
-    notify_register_check(kPowercuffModeKey, &token);
-    notify_set_state(token, target);
-    notify_post(kPowercuffNotify);
-    notify_close(token);
+    if (notify_register_check(kPowercuffModeKey, &token) == NOTIFY_STATUS_OK) {
+        notify_set_state(token, targetState);
+        notify_post(kPowercuffNotify);
+        notify_cancel(token); // THE FIX: notify_cancel instead of notify_close
+    }
 }
 %end
 %end
