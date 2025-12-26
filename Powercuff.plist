@@ -7,7 +7,11 @@
         <key>Bundles</key>
         <array>
             <string>com.apple.springboard</string>
-            <string>com.apple.thermalmonitord</string>
+            <string>com.apple.UIKit</string>
+        </array>
+        <key>Executables</key>
+        <array>
+            <string>thermalmonitord</string>
         </array>
     </dict>
 </dict>
