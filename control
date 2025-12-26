@@ -3,7 +3,7 @@ Name: Powercuff r3vamp
 Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0)
 Version: 1.0.0
 Architecture: iphoneos-arm64
-Description: Advanced power management and CPU throttling for iOS 16.
+Description: Advanced power management for iOS 16 Rootless.
 Maintainer: Baldaran
 Author: rpetrich, dlevi309, Baldaran
 Section: Tweaks
