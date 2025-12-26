@@ -4,7 +4,7 @@
 #define kPowercuffModeKey "com.rpetrich.powercuff.mode"
 #define kPowercuffNotify "com.rpetrich.powercuff.update"
 
-// Forward declarations for SpringBoard classes
+// No longer need private headers; we use interface declarations
 @interface SBBacklightController : NSObject
 + (id)sharedInstance;
 - (BOOL)screenIsOn;
@@ -16,15 +16,13 @@
 
 static id currentTarget = nil;
 
-// Function that runs inside thermalmonitord to apply the cap
 static void ApplyThermals() {
     int token;
     uint64_t state = 0;
     
-    // Register to check the state, then cancel the token immediately to prevent leaks
     if (notify_register_check(kPowercuffModeKey, &token) == NOTIFY_STATUS_OK) {
         notify_get_state(token, &state);
-        notify_cancel(token); // THE FIX: notify_cancel instead of notify_close
+        notify_cancel(token); 
     }
 
     NSArray *modes = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
@@ -37,7 +35,7 @@ static void ApplyThermals() {
     }
 }
 
-// --- THERMALMONITORD HOOKS ---
+// --- THERMALMONITORD ---
 %hook CommonProduct
 - (id)init {
     self = %orig;
@@ -51,27 +49,25 @@ static void ApplyThermals() {
 }
 %end
 
-// --- SPRINGBOARD HOOKS ---
+// --- SPRINGBOARD ---
 %group SpringBoardHooks
 %hook SBBacklightController
-- (void)backlight:(id)backlight didCompleteUpdateToState:(long long)state {
+// Using a more generic signature to avoid private type issues
+- (void)backlight:(id)arg1 didCompleteUpdateToState:(long long)arg2 {
     %orig;
     
-    // state 1 = Off, state 2+ = On for iOS 16
-    BOOL screenOn = (state > 1);
+    BOOL screenOn = (arg2 > 1);
     
-    // Load preferences for rootless
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist"];
     uint64_t userMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue];
     
-    // If screen is off, force Heavy (index 4). If on, use daily mode.
     uint64_t targetState = screenOn ? userMode : 4; 
     
     int token;
     if (notify_register_check(kPowercuffModeKey, &token) == NOTIFY_STATUS_OK) {
         notify_set_state(token, targetState);
         notify_post(kPowercuffNotify);
-        notify_cancel(token); // THE FIX: notify_cancel instead of notify_close
+        notify_cancel(token);
     }
 }
 %end
@@ -83,7 +79,6 @@ static void ApplyThermals() {
     if ([procName isEqualToString:@"thermalmonitord"]) {
         %init;
         int token;
-        // Listen for the cross-process trigger from SpringBoard
         notify_register_dispatch(kPowercuffNotify, &token, dispatch_get_main_queue(), ^(int t) {
             ApplyThermals();
         });
