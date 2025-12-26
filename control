@@ -1,9 +1,9 @@
 Package: com.baldaran.powercuff-r3vamp
 Name: Powercuff r3vamp
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader, firmware (>= 14.0)
-Version: 1.0.1
+Version: 1.5.0
 Architecture: iphoneos-arm64
-Description: Advanced semi-autonomic power management and background freezing for iOS 16 Rootless.
+Description: Advanced semi-autonomic power management for iOS 16. Includes IPC bridging and Iron Curtain screen-off throttling.
 Maintainer: Baldaran
 Author: rpetrich, dlevi309, Baldaran
 Section: Tweaks
