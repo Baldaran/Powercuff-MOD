@@ -15,9 +15,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Dependencies
+        run: |
+          brew install ldid xz
+          # Ensures ldid is in the path for Theos
+          echo "$(brew --prefix ldid)/bin" >> $GITHUB_PATH
+
       - name: Clean Ghost Submodules
         run: |
-          # This forces Git to forget about that framework folder
           git rm -r --cached framework || true
           rm -rf .gitmodules || true
 
@@ -27,7 +32,6 @@ jobs:
           
       - name: Setup SDK
         run: |
-          # Remove the existing empty sdks folder created by Theos install
           rm -rf $THEOS/sdks
           git clone https://github.com/theos/sdks.git $THEOS/sdks
           
