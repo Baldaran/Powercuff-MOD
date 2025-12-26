@@ -1,82 +1,84 @@
 #import <notify.h>
 #import <Foundation/Foundation.h>
 
-// Pre-define interfaces for safety
-@interface BKSProcessAssertion : NSObject
-- (id)initWithBundleIdentifier:(NSString *)bundleID flags:(unsigned int)flags reason:(unsigned int)reason name:(NSString *)name withHandler:(id)handler;
-@end
+// Definitions
+#define kPowercuffModeKey "com.rpetrich.powercuff.mode"
+#define kPowercuffNotify "com.rpetrich.powercuff.update"
 
 @interface SBBacklightController : NSObject
 + (id)sharedInstance;
-- (BOOL)screenIsOn;
 @end
 
 @interface CommonProduct : NSObject
 - (void)putDeviceInThermalSimulationMode:(NSString *)mode;
 @end
 
-static id currentTarget;
-static int token;
-static BOOL isScreenOn = YES;
-static uint64_t userSelectedMode = 3; 
+static id currentTarget = nil;
 
-static void ApplyThermals(void) {
-    // Autonomic: 4 (Heavy) when screen is off, otherwise user choice
-    uint64_t targetMode = isScreenOn ? userSelectedMode : 4; 
+static void ApplyThermals() {
+    int token;
+    uint64_t state;
+    notify_register_check(kPowercuffModeKey, &token);
+    notify_get_state(token, &state);
+    notify_close(token);
+
+    // GENIUS LOGIC: 0-4 scale. We add +1 intensity if screen is off.
+    // If Unlocked Moderate (3) -> use 3. If Locked -> use 4 (Heavy).
     NSArray *modes = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
     
-    if (currentTarget && targetMode < [modes count]) {
-        NSString *modeStr = modes[targetMode];
-        
-        // GENIUS LOGGING: This will appear in 'oslog' or 'syslog'
-        NSLog(@"[Powercuff-r3vamp] Setting Mode: %@ (Screen: %@)", modeStr, isScreenOn ? @"ON" : @"OFF");
-
-        if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
-            [currentTarget putDeviceInThermalSimulationMode:modeStr];
-        }
+    if (currentTarget && state < [modes count]) {
+        [currentTarget putDeviceInThermalSimulationMode:modes[state]];
     }
 }
 
-%group SpringBoardHooks
-%hook SBBacklightController
-- (void)_performDeferredBacklightRampWork {
-    %orig;
-    BOOL currentlyOn = [self screenIsOn];
-    if (currentlyOn != isScreenOn) {
-        isScreenOn = currentlyOn;
-        ApplyThermals();
-        notify_post("com.rpetrich.powercuff.thermals");
-    }
-}
-%end
-
-%hook BKSProcessAssertion
-- (id)initWithBundleIdentifier:(NSString *)bundleID flags:(unsigned int)flags reason:(unsigned int)reason name:(NSString *)name withHandler:(id)handler {
-    uint64_t currentMode = isScreenOn ? userSelectedMode : 4;
-    unsigned int newFlags = flags;
-    if (currentMode == 3) newFlags &= ~0x2; // Moderate: Sync Pause
-    else if (currentMode >= 4) newFlags = 0; // Heavy: Freeze
-    return %orig(bundleID, newFlags, reason, name, handler);
-}
-%end
-%end
-
-// Add the hook to capture the thermal object
+// --- THERMALMONITORD SIDE ---
 %hook CommonProduct
 - (id)init {
     self = %orig;
     currentTarget = self;
     return self;
 }
+
+- (void)serviceModeChanged {
+    %orig;
+    ApplyThermals();
+}
+%end
+
+// --- SPRINGBOARD SIDE ---
+%group SpringBoardHooks
+%hook SBBacklightController
+- (void)backlight:(id)backlight didCompleteUpdateToState:(long long)state {
+    %orig;
+    
+    // state 1 = Off, state 2 = On (usually)
+    BOOL screenOn = (state > 1);
+    
+    // Load User Choice
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist"];
+    uint64_t userMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue];
+    
+    // THE SMART SWITCH
+    uint64_t target = screenOn ? userMode : 4; // 4 = HEAVY
+    
+    int token;
+    notify_register_check(kPowercuffModeKey, &token);
+    notify_set_state(token, target);
+    notify_post(kPowercuffNotify);
+    notify_close(token);
+}
+%end
 %end
 
 %ctor {
-    notify_register_check("com.rpetrich.powercuff.thermals", &token);
     NSString *procName = [[NSProcessInfo processInfo] processName];
     
     if ([procName isEqualToString:@"thermalmonitord"]) {
         %init;
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)ApplyThermals, CFSTR("com.rpetrich.powercuff.thermals"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+        int token;
+        notify_register_dispatch(kPowercuffNotify, &token, dispatch_get_main_queue(), ^(int t) {
+            ApplyThermals();
+        });
     } else if ([procName isEqualToString:@"SpringBoard"]) {
         %init(SpringBoardHooks);
     }
