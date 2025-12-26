@@ -1,6 +1,11 @@
 #import <notify.h>
 #import <Foundation/Foundation.h>
 
+// Private Headers for AssertionServices
+@interface BKSProcessAssertion : NSObject
+- (id)initWithBundleIdentifier:(NSString *)bundleID flags:(unsigned int)flags reason:(unsigned int)reason name:(NSString *)name withHandler:(id)handler;
+@end
+
 #ifndef ROOT_PATH_NS
 #define ROOT_PATH_NS(path) \
     ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? \
@@ -13,70 +18,74 @@
 
 static id currentTarget;
 static int token;
+static BOOL isScreenOn = YES;
+static uint64_t userSelectedMode = 3; // Default to Moderate
 
+// --- Core Thermal Application ---
 static void ApplyThermals(void) {
-    uint64_t mode = 0;
-    notify_get_state(token, &mode);
-    
-    // Index mapping: 0:None, 1:Nominal, 2:Light, 3:Moderate, 4:Heavy
+    uint64_t targetMode = isScreenOn ? userSelectedMode : 4; // Use HEAVY if screen is off
+
     NSArray *modes = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
-    
-    if (currentTarget) {
-        if (mode == 0) {
-            // GENIUS RESET: Explicitly tell iOS to stop simulating heat
-            if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
-                [currentTarget putDeviceInThermalSimulationMode:nil]; 
-                [currentTarget putDeviceInThermalSimulationMode:@"off"];
-            }
-        } else if (mode < modes.count) {
-            NSString *modeStr = modes[mode];
-            if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
-                [currentTarget putDeviceInThermalSimulationMode:modeStr];
-            }
+    if (currentTarget && targetMode < [modes count]) {
+        NSString *modeStr = modes[targetMode];
+        if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
+            [currentTarget putDeviceInThermalSimulationMode:modeStr];
         }
     }
 }
 
-%group thermalmonitord
-%hook CommonProduct
-- (id)initProduct:(id)arg1 {
-    self = %orig;
-    if (self) {
-        currentTarget = self;
+// --- Autonomic Logic ---
+static void UpdateScreenState(BOOL on) {
+    static int timerGen = 0; // Prevent overlapping delay logic
+    int currentGen = ++timerGen;
+
+    if (on) {
+        // Screen turned on: Wait 2 seconds before ramping up performance
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (currentGen == timerGen) { // Only execute if screen is still on
+                isScreenOn = YES;
+                ApplyThermals();
+                notify_post("com.rpetrich.powercuff.thermals");
+            }
+        });
+    } else {
+        // Screen turned off: Slam the "Iron Curtain" immediately
+        isScreenOn = NO;
         ApplyThermals();
+        notify_post("com.rpetrich.powercuff.thermals");
     }
-    return self;
+}
+
+// --- Background Freezer ---
+%group SoftwareThrottling
+%hook BKSProcessAssertion
+- (id)initWithBundleIdentifier:(NSString *)bundleID flags:(unsigned int)flags reason:(unsigned int)reason name:(NSString *)name withHandler:(id)handler {
+    uint64_t currentMode = isScreenOn ? userSelectedMode : 4;
+
+    unsigned int newFlags = flags;
+    if (currentMode == 3) {
+        newFlags &= ~0x2; // Moderate: Limit background tasks
+    } else if (currentMode >= 4) {
+        newFlags = 0; // Heavy: Absolute Freeze
+    }
+    return %orig(bundleID, newFlags, reason, name, handler);
 }
 %end
-
-// Fallback for newer iOS 16 thermal structures
-%hook GPProduct
-- (id)initProduct:(id)arg1 {
-    self = %orig;
-    if (self) {
-        currentTarget = self;
-        ApplyThermals();
-    }
-    return self;
-}
-%end
 %end
 
+// --- Settings Loader ---
 static void LoadSettings(void) {
     NSString *path = ROOT_PATH_NS(@"/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist");
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:path];
     
-    uint64_t mode = [prefs[@"PowerMode"] ?: @0 unsignedLongLongValue];
+    userSelectedMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue]; // Default to Moderate (3)
     
-    // Check Low Power Mode requirement
-    if ([prefs[@"RequireLowPowerMode"] boolValue]) {
-        if (![[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
-            mode = 0; // Force 'None' if LPM isn't active
-        }
+    if ([prefs[@"RequireLowPowerMode"] boolValue] && ![[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
+        userSelectedMode = 0; // Forced None if LPM check fails
     }
     
-    notify_set_state(token, mode);
-    notify_post("com.rpetrich.powercuff.thermals");
+    notify_set_state(token, userSelectedMode);
+    ApplyThermals();
 }
 
 %ctor {
@@ -85,13 +94,13 @@ static void LoadSettings(void) {
     
     if ([procName isEqualToString:@"thermalmonitord"]) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)ApplyThermals, CFSTR("com.rpetrich.powercuff.thermals"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-        %init(thermalmonitord);
-    } else {
-        // Observer for SpringBoard and Apps to watch for setting changes
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)LoadSettings, CFSTR("com.rpetrich.powercuff.settingschanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+        %init(); 
+    } else if ([procName isEqualToString:@"SpringBoard"]) {
+        // iOS 16 specific SpringBoard observers for screen state
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)^{ UpdateScreenState(NO); }, CFSTR("com.apple.springboard.hasBlankedScreen"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)^{ UpdateScreenState(YES); }, CFSTR("com.apple.springboard.screenunblanked"), NULL, CFNotificationSuspensionBehaviorCoalesce);
         
-        if ([procName isEqualToString:@"SpringBoard"]) {
-            LoadSettings();
-        }
+        %init(SoftwareThrottling);
+        LoadSettings();
     }
 }
