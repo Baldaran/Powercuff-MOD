@@ -7,7 +7,7 @@ THEOS_PACKAGE_SCHEME = rootless
 TWEAK_NAME = Powercuff
 Powercuff_FILES = Powercuff.x
 Powercuff_FRAMEWORKS = Foundation UIKit
-# We removed BackBoardServices to fix the linker error
+# Removed BackBoardServices to prevent linker error on GitHub Actions
 Powercuff_CFLAGS = -fobjc-arc -Wno-error
 
 include $(THEOS)/makefiles/common.mk
