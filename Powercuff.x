@@ -1,14 +1,13 @@
 #import <notify.h>
 #import <Foundation/Foundation.h>
+#import <QuartzCore/CADisplayLink.h>
+#import <UIKit/UIKit.h>
 
-// Unique keys for Inter-Process Communication (IPC)
 #define kPowercuffModeKey "com.rpetrich.powercuff.mode"
 #define kPowercuffNotify "com.rpetrich.powercuff.update"
 
-// Forward declarations to keep the compiler happy without private headers
 @interface SBBacklightController : NSObject
-+ (id)sharedInstance;
-- (BOOL)screenIsOn;
+- (void)backlight:(id)arg1 didCompleteUpdateToState:(long long)arg2;
 @end
 
 @interface CommonProduct : NSObject
@@ -17,74 +16,75 @@
 
 static id currentTarget = nil;
 
-/**
- * ApplyThermals
- * Executed inside 'thermalmonitord'
- * This reads the state set by SpringBoard and tells the A11 chip to throttle.
- */
-static void ApplyThermals() {
+// Helper to get current Powercuff state
+static uint64_t GetPowercuffState() {
     int token;
     uint64_t state = 0;
-    
-    // Check the system register for the target mode
     if (notify_register_check(kPowercuffModeKey, &token) == NOTIFY_STATUS_OK) {
         notify_get_state(token, &state);
-        notify_cancel(token); // Correct Darwin API to release token
+        notify_cancel(token);
     }
+    return state;
+}
 
-    // Index mapping for Powercuff/thermalmonitord
+static void ApplyThermals() {
+    uint64_t state = GetPowercuffState();
     NSArray *modes = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
     
     if (currentTarget && state < [modes count]) {
         NSString *modeStr = modes[state];
-        
         if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
-            // Apply the thermal simulation to throttle CPU/GPU
             [currentTarget putDeviceInThermalSimulationMode:modeStr];
-            
-            // Genius Trick: On iPhone X, re-applying 'heavy' can help force GPU downclocking
-            if (state == 4) {
-                [currentTarget putDeviceInThermalSimulationMode:@"heavy"];
-            }
+            // Force aggressive state for Heavy
+            if (state == 4) [currentTarget putDeviceInThermalSimulationMode:@"heavy"];
         }
     }
 }
 
-// --- HOOKS FOR thermalmonitord ---
+// --- 30 FPS LIMITER LOGIC ---
+%group FrameLimiter
+%hook CADisplayLink
+- (void)setPreferredFramesPerSecond:(NSInteger)fps {
+    if (GetPowercuffState() == 4 && fps > 30) {
+        %orig(30); // Force 30FPS for animations
+    } else {
+        %orig(fps);
+    }
+}
+
+// Modern iOS 15+ API for frame rate ranges
+- (void)setPreferredFrameRateRange:(CAFrameRateRange)range {
+    if (GetPowercuffState() == 4) {
+        // Cap the max and preferred to 30
+        CAFrameRateRange cappedRange = CAFrameRateRangeMake(range.minimum, 30, 30);
+        %orig(cappedRange);
+    } else {
+        %orig(range);
+    }
+}
+%end
+%end
+
+// --- THERMALMONITORD HOOKS ---
 %hook CommonProduct
 - (id)init {
     self = %orig;
-    currentTarget = self; // Capture the hardware controller object
+    currentTarget = self;
     return self;
 }
-
-- (void)serviceModeChanged {
-    %orig;
-    ApplyThermals();
-}
+- (void)serviceModeChanged { %orig; ApplyThermals(); }
 %end
 
-// --- HOOKS FOR SpringBoard ---
+// --- SPRINGBOARD HOOKS ---
 %group SpringBoardHooks
 %hook SBBacklightController
-/**
- * backlight:didCompleteUpdateToState:
- * This is the most reliable screen-state hook for iOS 15/16.
- */
 - (void)backlight:(id)arg1 didCompleteUpdateToState:(long long)arg2 {
     %orig;
-    
-    // arg2: 1 = Off, 2+ = On
     BOOL screenOn = (arg2 > 1);
-    
-    // Load preference from the rootless path
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist"];
     uint64_t userMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue];
-    
-    // IRON CURTAIN: Force Heavy (4) if screen is off, else use user's Daily mode
     uint64_t targetState = screenOn ? userMode : 4; 
     
-    // Broadcast the change to thermalmonitord
     int token;
     if (notify_register_check(kPowercuffModeKey, &token) == NOTIFY_STATUS_OK) {
         notify_set_state(token, targetState);
@@ -95,18 +95,17 @@ static void ApplyThermals() {
 %end
 %end
 
-// --- CONSTRUCTOR ---
 %ctor {
     NSString *procName = [[NSProcessInfo processInfo] processName];
-    
     if ([procName isEqualToString:@"thermalmonitord"]) {
         %init;
         int token;
-        // Set up a listener so thermalmonitord reacts instantly to screen changes
         notify_register_dispatch(kPowercuffNotify, &token, dispatch_get_main_queue(), ^(int t) {
             ApplyThermals();
         });
-    } else if ([procName isEqualToString:@"SpringBoard"]) {
+    } else {
+        // Init SpringBoard hooks and global FrameLimiter for all apps
         %init(SpringBoardHooks);
+        %init(FrameLimiter);
     }
 }
