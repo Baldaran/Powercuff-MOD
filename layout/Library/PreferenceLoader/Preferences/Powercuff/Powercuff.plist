@@ -20,8 +20,8 @@
             <string>Semi-Autonomic Engine</string>
             <key>footerText</key>
             <string>• Unlocked: Performance capped at Daily Mode.
-• Locked/Pocket: Automatically slams HEAVY (30% Cap + 30FPS) and freezes background activity.
-• Safety: 30FPS cap active ONLY in Heavy mode to preserve GPU lifespan.</string>
+• Locked/Pocket: Automatically slams HEAVY (30% Cap + 30FPS) and freezes all background activity.
+• Wake Delay: 2-second safety buffer before ramping up speed.</string>
         </dict>
         <dict>
             <key>cell</key>
