@@ -1,8 +1,6 @@
 #import <notify.h>
 #import <Foundation/Foundation.h>
 
-// Genius Fix: Declare the interface so the compiler is happy.
-// We do NOT #import <AssertionServices/BKSProcessAssertion.h>
 @interface BKSProcessAssertion : NSObject
 - (id)initWithBundleIdentifier:(NSString *)bundleID flags:(unsigned int)flags reason:(unsigned int)reason name:(NSString *)name withHandler:(id)handler;
 @end
@@ -17,10 +15,16 @@
 - (void)putDeviceInThermalSimulationMode:(NSString *)mode;
 @end
 
+// SpringBoard Private Class for Backlight
+@interface SBBacklightController : NSObject
++ (id)sharedInstance;
+- (BOOL)screenIsOn;
+@end
+
 static id currentTarget;
 static int token;
 static BOOL isScreenOn = YES;
-static uint64_t userSelectedMode = 3; // Default to Moderate
+static uint64_t userSelectedMode = 3; 
 
 static void ApplyThermals(void) {
     uint64_t targetMode = isScreenOn ? userSelectedMode : 4; 
@@ -36,6 +40,7 @@ static void ApplyThermals(void) {
 static void UpdateScreenState(BOOL on) {
     static int timerGen = 0;
     int currentGen = ++timerGen;
+
     if (on) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (currentGen == timerGen) {
@@ -51,16 +56,24 @@ static void UpdateScreenState(BOOL on) {
     }
 }
 
-%group SoftwareThrottling
+// --- SAFE MODE PROTECTION: Hooking the backlight directly ---
+%group SpringBoardHooks
+%hook SBBacklightController
+- (void)_performDeferredBacklightRampWork {
+    %orig;
+    BOOL currentlyOn = [self screenIsOn];
+    if (currentlyOn != isScreenOn) {
+        UpdateScreenState(currentlyOn);
+    }
+}
+%end
+
 %hook BKSProcessAssertion
 - (id)initWithBundleIdentifier:(NSString *)bundleID flags:(unsigned int)flags reason:(unsigned int)reason name:(NSString *)name withHandler:(id)handler {
     uint64_t currentMode = isScreenOn ? userSelectedMode : 4;
     unsigned int newFlags = flags;
-    if (currentMode == 3) {
-        newFlags &= ~0x2; 
-    } else if (currentMode >= 4) {
-        newFlags = 0; 
-    }
+    if (currentMode == 3) newFlags &= ~0x2; 
+    else if (currentMode >= 4) newFlags = 0; 
     return %orig(bundleID, newFlags, reason, name, handler);
 }
 %end
@@ -70,9 +83,6 @@ static void LoadSettings(void) {
     NSString *path = ROOT_PATH_NS(@"/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist");
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:path];
     userSelectedMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue];
-    if ([prefs[@"RequireLowPowerMode"] boolValue] && ![[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
-        userSelectedMode = 0;
-    }
     notify_set_state(token, userSelectedMode);
     ApplyThermals();
 }
@@ -80,13 +90,12 @@ static void LoadSettings(void) {
 %ctor {
     notify_register_check("com.rpetrich.powercuff.thermals", &token);
     NSString *procName = [[NSProcessInfo processInfo] processName];
+    
     if ([procName isEqualToString:@"thermalmonitord"]) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)ApplyThermals, CFSTR("com.rpetrich.powercuff.thermals"), NULL, CFNotificationSuspensionBehaviorCoalesce);
         %init(); 
     } else if ([procName isEqualToString:@"SpringBoard"]) {
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)^{ UpdateScreenState(NO); }, CFSTR("com.apple.springboard.hasBlankedScreen"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)^{ UpdateScreenState(YES); }, CFSTR("com.apple.springboard.screenunblanked"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-        %init(SoftwareThrottling);
+        %init(SpringBoardHooks);
         LoadSettings();
     }
 }
