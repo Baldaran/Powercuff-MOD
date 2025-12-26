@@ -4,7 +4,7 @@
 #define kPowercuffModeKey "com.rpetrich.powercuff.mode"
 #define kPowercuffNotify "com.rpetrich.powercuff.update"
 
-// No longer need private headers; we use interface declarations
+// Forward declarations - No private headers needed
 @interface SBBacklightController : NSObject
 + (id)sharedInstance;
 - (BOOL)screenIsOn;
@@ -52,15 +52,18 @@ static void ApplyThermals() {
 // --- SPRINGBOARD ---
 %group SpringBoardHooks
 %hook SBBacklightController
-// Using a more generic signature to avoid private type issues
+// Using id and long long to remain SDK-agnostic and pass the linker
 - (void)backlight:(id)arg1 didCompleteUpdateToState:(long long)arg2 {
     %orig;
     
+    // State 1 = Off, State 2+ = On
     BOOL screenOn = (arg2 > 1);
     
+    // Rootless preference path
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist"];
     uint64_t userMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue];
     
+    // Logic: Screen Off = Heavy (4), Screen On = User Choice
     uint64_t targetState = screenOn ? userMode : 4; 
     
     int token;
