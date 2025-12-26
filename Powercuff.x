@@ -6,17 +6,19 @@
 #define kPowercuffModeKey "com.rpetrich.powercuff.mode"
 #define kPowercuffNotify "com.rpetrich.powercuff.update"
 
+// --- ADDED INTERFACES FOR DEEPER HARDWARE CONTROL ---
 @interface SBBacklightController : NSObject
 - (void)backlight:(id)arg1 didCompleteUpdateToState:(long long)arg2;
 @end
 
 @interface CommonProduct : NSObject
 - (void)putDeviceInThermalSimulationMode:(NSString *)mode;
+- (void)setThermalLevel:(int)level; // NEW: Direct level control
+- (int)lowBatteryLevel; // NEW: Spoof battery state to force parking
 @end
 
 static id currentTarget = nil;
 
-// Helper to get current Powercuff state
 static uint64_t GetPowercuffState() {
     int token;
     uint64_t state = 0;
@@ -35,28 +37,32 @@ static void ApplyThermals() {
         NSString *modeStr = modes[state];
         if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
             [currentTarget putDeviceInThermalSimulationMode:modeStr];
-            // Force aggressive state for Heavy
-            if (state == 4) [currentTarget putDeviceInThermalSimulationMode:@"heavy"];
+            
+            // --- NEW GENIUS LOGIC: FORCE CORE PARKING ---
+            if (state == 4) {
+                // On A11, Thermal Level 3+ triggers severe CPU frequency scaling
+                if ([currentTarget respondsToSelector:@selector(setThermalLevel:)]) {
+                    [currentTarget setThermalLevel:3]; 
+                }
+            }
         }
     }
 }
 
-// --- 30 FPS LIMITER LOGIC ---
 %group FrameLimiter
 %hook CADisplayLink
 - (void)setPreferredFramesPerSecond:(NSInteger)fps {
     if (GetPowercuffState() == 4 && fps > 30) {
-        %orig(30); // Force 30FPS for animations
+        %orig(30); 
     } else {
         %orig(fps);
     }
 }
 
-// Modern iOS 15+ API for frame rate ranges
 - (void)setPreferredFrameRateRange:(CAFrameRateRange)range {
     if (GetPowercuffState() == 4) {
-        // Cap the max and preferred to 30
-        CAFrameRateRange cappedRange = CAFrameRateRangeMake(range.minimum, 30, 30);
+        // --- NEW: Force the range to lock at 30 to prevent Antutu spikes ---
+        CAFrameRateRange cappedRange = CAFrameRateRangeMake(10, 30, 30);
         %orig(cappedRange);
     } else {
         %orig(range);
@@ -65,22 +71,30 @@ static void ApplyThermals() {
 %end
 %end
 
-// --- THERMALMONITORD HOOKS ---
 %hook CommonProduct
 - (id)init {
     self = %orig;
     currentTarget = self;
     return self;
 }
+
+// --- NEW GENIUS HOOK: Forced Throttling ---
+- (int)lowBatteryLevel {
+    // If state is Heavy, return 100% to trick the OS into maximum energy saving
+    if (GetPowercuffState() == 4) return 100;
+    return %orig;
+}
+
 - (void)serviceModeChanged { %orig; ApplyThermals(); }
 %end
 
-// --- SPRINGBOARD HOOKS ---
 %group SpringBoardHooks
 %hook SBBacklightController
 - (void)backlight:(id)arg1 didCompleteUpdateToState:(long long)arg2 {
     %orig;
     BOOL screenOn = (arg2 > 1);
+    
+    // Ensure we look in the correct rootless path for iOS 16
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist"];
     uint64_t userMode = [prefs[@"PowerMode"] ?: @3 unsignedLongLongValue];
     uint64_t targetState = screenOn ? userMode : 4; 
@@ -104,7 +118,6 @@ static void ApplyThermals() {
             ApplyThermals();
         });
     } else {
-        // Init SpringBoard hooks and global FrameLimiter for all apps
         %init(SpringBoardHooks);
         %init(FrameLimiter);
     }
