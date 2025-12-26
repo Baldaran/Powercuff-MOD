@@ -1,7 +1,7 @@
 #import <notify.h>
 #import <Foundation/Foundation.h>
-#import <UIKit/UIKit.h>
 
+// Rootless Path Helper
 #ifndef ROOT_PATH_NS
 #define ROOT_PATH_NS(path) \
     ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? \
@@ -9,20 +9,22 @@
 #endif
 
 @interface CommonProduct : NSObject
-- (void)putDeviceInThermalSimulationMode:(NSString *)simulationMode;
+- (void)putDeviceInThermalSimulationMode:(NSString *)mode;
+@end
+
+@interface GPProduct : NSObject
+- (void)putDeviceInThermalSimulationMode:(NSString *)mode;
 @end
 
 @interface Context : NSObject
 - (void)setThermalSimulationMode:(int)mode;
 @end
 
-extern char ***_NSGetArgv(void);
-
-static id currentTarget; 
+static id currentTarget;
 static int token;
 
-static NSString *stringForThermalMode(uint64_t thermalMode) {
-    switch (thermalMode) {
+static NSString *stringForMode(uint64_t mode) {
+    switch (mode) {
         case 1: return @"nominal";
         case 2: return @"light";
         case 3: return @"moderate";
@@ -32,33 +34,32 @@ static NSString *stringForThermalMode(uint64_t thermalMode) {
 }
 
 static void ApplyThermals(void) {
-    uint64_t thermalMode = 0;
-    notify_get_state(token, &thermalMode);
+    uint64_t mode = 0;
+    notify_get_state(token, &mode);
     
-    NSLog(@"[Powercuff-Debug] Applying Thermal Mode: %llu (%@)", thermalMode, stringForThermalMode(thermalMode));
-
     if (currentTarget) {
+        NSString *modeString = stringForMode(mode);
         if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
-            NSLog(@"[Powercuff-Debug] Using CommonProduct method");
-            [currentTarget putDeviceInThermalSimulationMode:stringForThermalMode(thermalMode)];
+            [currentTarget putDeviceInThermalSimulationMode:modeString];
         } else if ([currentTarget respondsToSelector:@selector(setThermalSimulationMode:)]) {
-            NSLog(@"[Powercuff-Debug] Using Context method");
-            [currentTarget setThermalSimulationMode:(int)thermalMode];
+            [currentTarget setThermalSimulationMode:(int)mode];
         }
-    } else {
-        NSLog(@"[Powercuff-Debug] Error: currentTarget is NULL");
     }
 }
 
 %group thermalmonitord
 %hook CommonProduct
-- (id)initProduct:(id)data {
+- (id)initProduct:(id)arg1 {
     self = %orig;
-    if (self) {
-        currentTarget = self;
-        NSLog(@"[Powercuff-Debug] CommonProduct initialized");
-        ApplyThermals();
-    }
+    if (self) { currentTarget = self; ApplyThermals(); }
+    return self;
+}
+%end
+
+%hook GPProduct
+- (id)initProduct:(id)arg1 {
+    self = %orig;
+    if (self) { currentTarget = self; ApplyThermals(); }
     return self;
 }
 %end
@@ -66,45 +67,37 @@ static void ApplyThermals(void) {
 %hook Context
 - (id)init {
     self = %orig;
-    if (self) {
-        currentTarget = self;
-        NSLog(@"[Powercuff-Debug] Context initialized");
-        ApplyThermals();
-    }
+    if (self) { currentTarget = self; ApplyThermals(); }
     return self;
 }
 %end
 %end
 
 static void LoadSettings(void) {
-    NSString *basePath = @"/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist";
-    NSString *finalPath = ROOT_PATH_NS(basePath);
+    NSString *path = ROOT_PATH_NS(@"/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist");
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:path];
     
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:finalPath];
-    NSLog(@"[Powercuff-Debug] Loading settings from: %@", finalPath);
+    uint64_t mode = [prefs[@"PowerMode"] ?: @0 unsignedLongLongValue];
     
-    uint64_t thermalMode = 0;
-    if (prefs[@"PowerMode"]) {
-        thermalMode = [prefs[@"PowerMode"] unsignedLongLongValue];
-    }
-    
+    // Check if we should only apply in Low Power Mode
     if ([prefs[@"RequireLowPowerMode"] boolValue]) {
         if (![[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
-            NSLog(@"[Powercuff-Debug] Low Power Mode required but NOT enabled. Setting mode to 0.");
-            thermalMode = 0;
+            mode = 0;
         }
     }
-
-    NSLog(@"[Powercuff-Debug] Final Thermal Mode: %llu", thermalMode);
-    notify_set_state(token, thermalMode);
+    
+    notify_set_state(token, mode);
     notify_post("com.rpetrich.powercuff.thermals");
 }
 
 %group SpringBoard
 %hook SpringBoard
+- (void)applicationDidFinishLaunching:(id)arg1 {
+    %orig;
+    LoadSettings();
+}
 - (void)_batterySaverModeChanged:(int)arg1 {
     %orig;
-    NSLog(@"[Powercuff-Debug] Battery Saver Mode Changed");
     LoadSettings();
 }
 %end
@@ -112,19 +105,13 @@ static void LoadSettings(void) {
 
 %ctor {
     notify_register_check("com.rpetrich.powercuff.thermals", &token);
+    NSString *proc = [[NSProcessInfo processInfo] processName];
     
-    char *argv0 = **_NSGetArgv();
-    if (argv0) {
-        NSString *processName = [[NSString stringWithUTF8String:argv0] lastPathComponent];
-        NSLog(@"[Powercuff-Debug] Loaded into process: %@", processName);
-
-        if ([processName isEqualToString:@"thermalmonitord"]) {
-            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)ApplyThermals, CFSTR("com.rpetrich.powercuff.thermals"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-            %init(thermalmonitord);
-        } else if ([processName isEqualToString:@"SpringBoard"]) {
-            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)LoadSettings, CFSTR("com.rpetrich.powercuff.settingschanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-            LoadSettings();
-            %init(SpringBoard);
-        }
+    if ([proc isEqualToString:@"thermalmonitord"]) {
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)ApplyThermals, CFSTR("com.rpetrich.powercuff.thermals"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+        %init(thermalmonitord);
+    } else if ([proc isEqualToString:@"SpringBoard"]) {
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)LoadSettings, CFSTR("com.rpetrich.powercuff.settingschanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+        %init(SpringBoard);
     }
 }
