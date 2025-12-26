@@ -9,7 +9,7 @@
         <key>icon</key>
         <string>icon.png</string>
         <key>label</key>
-        <string>Powercuff</string>
+        <string>Powercuff r3vamp</string>
     </dict>
     <key>items</key>
     <array>
@@ -17,9 +17,11 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>label</key>
-            <string>Throttling Level</string>
+            <string>Semi-Autonomic Engine</string>
             <key>footerText</key>
-            <string>Nominal: Minimal impact. Heavy: Maximum battery save (may lag).</string>
+            <string>• Unlocked: Performance capped at Daily Mode.
+• Locked/Pocket: Automatically slams HEAVY (30% Cap) and freezes all background apps.
+• Wake Delay: 2-second safety buffer before ramping up speed.</string>
         </dict>
         <dict>
             <key>cell</key>
@@ -31,14 +33,16 @@
             <key>key</key>
             <string>PowerMode</string>
             <key>label</key>
-            <string>Throttling</string>
+            <string>Daily Usage Mode</string>
+            <key>default</key>
+            <integer>3</integer>
             <key>validTitles</key>
             <array>
-                <string>None</string>
-                <string>Nominal</string>
-                <string>Light</string>
-                <string>Moderate</string>
-                <string>Heavy</string>
+                <string>None (Stock Speed)</string>
+                <string>Nominal (~90% Cap)</string>
+                <string>Light (~75% Cap)</string>
+                <string>Moderate (~50% Cap - Recommended)</string>
+                <string>Heavy (30% Cap + Full Freeze)</string>
             </array>
             <key>validValues</key>
             <array>
@@ -50,6 +54,14 @@
             </array>
             <key>PostNotification</key>
             <string>com.rpetrich.powercuff.settingschanged</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>Activation Logic</string>
+            <key>footerText</key>
+            <string>© 2025 Powercuff r3vamp - Developed by Baldaran</string>
         </dict>
         <dict>
             <key>cell</key>
@@ -66,5 +78,7 @@
             <string>com.rpetrich.powercuff.settingschanged</string>
         </dict>
     </array>
+    <key>title</key>
+    <string>Powercuff r3vamp</string>
 </dict>
 </plist>
