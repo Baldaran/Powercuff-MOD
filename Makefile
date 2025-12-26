@@ -17,3 +17,6 @@ Powercuff_CFLAGS = -fobjc-arc -std=c99
 
 include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+Powercuff_PRIVATE_FRAMEWORKS = AssertionServices
+Powercuff_LDFLAGS += -lactivator # Only if you still use activator, otherwise remove
