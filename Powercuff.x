@@ -1,15 +1,15 @@
 #import <notify.h>
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 // --- ROOTLESS COMPATIBILITY MACRO ---
+// This ensures the tweak looks in /var/jb/ on rootless jailbreaks
 #ifndef ROOT_PATH_NS
 #define ROOT_PATH_NS(path) \
     ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? \
     [@"/var/jb" stringByAppendingPathComponent:path] : path)
 #endif
 // ------------------------------------
-
-#import <UIKit/UIKit.h>
 
 // Forward declarations for the compiler
 @interface CommonProduct : NSObject
@@ -20,9 +20,10 @@
 - (void)setThermalSimulationMode:(int)mode;
 @end
 
+// This allows us to check the process name at runtime
 extern char ***_NSGetArgv(void);
 
-static id currentTarget; // Renamed to Target to be more generic
+static id currentTarget; 
 static int token;
 
 // Helper to map integers to strings for the legacy CommonProduct method
@@ -41,7 +42,7 @@ static void ApplyThermals(void) {
     notify_get_state(token, &thermalMode);
     
     if (currentTarget) {
-        // iOS 16 check: determine which method the target supports
+        // iOS 16 compatibility check
         if ([currentTarget respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
             [currentTarget putDeviceInThermalSimulationMode:stringForThermalMode(thermalMode)];
         } else if ([currentTarget respondsToSelector:@selector(setThermalSimulationMode:)]) {
@@ -52,7 +53,6 @@ static void ApplyThermals(void) {
 
 %group thermalmonitord
 
-// Hooking both possible classes for 100% compatibility on iOS 16
 %hook CommonProduct
 - (id)initProduct:(id)data {
     self = %orig;
@@ -78,17 +78,18 @@ static void ApplyThermals(void) {
 %end
 
 static void LoadSettings(void) {
-    // ROOT_PATH_NS is mandatory for Rootless iOS 16
-    NSString *path = @"/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist";
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:ROOT_PATH_NS(path)];
+    // We pass the absolute path through the ROOT_PATH_NS macro
+    NSString *basePath = @"/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist";
+    NSString *finalPath = ROOT_PATH_NS(basePath);
+    
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:finalPath];
     
     uint64_t thermalMode = 0;
     if (prefs[@"PowerMode"]) {
         thermalMode = [prefs[@"PowerMode"] unsignedLongLongValue];
     }
     
-    // Check Low Power Mode status
-    // Note: On iOS 16, we often use [NSProcessInfo processInfo].isLowPowerModeEnabled
+    // Check Low Power Mode status via standard Foundation API
     if ([prefs[@"RequireLowPowerMode"] boolValue]) {
         if (![[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
             thermalMode = 0;
@@ -101,7 +102,7 @@ static void LoadSettings(void) {
 
 %group SpringBoard
 %hook SpringBoard
-- (void)_batterySaverModeChanged:(NSInteger)arg1 {
+- (void)_batterySaverModeChanged:(int)arg1 {
     %orig;
     LoadSettings();
 }
@@ -112,14 +113,16 @@ static void LoadSettings(void) {
     notify_register_check("com.rpetrich.powercuff.thermals", &token);
     
     char *argv0 = **_NSGetArgv();
-    NSString *processName = [[NSString stringWithUTF8String:argv0] lastPathComponent];
+    if (argv0) {
+        NSString *processName = [[NSString stringWithUTF8String:argv0] lastPathComponent];
 
-    if ([processName isEqualToString:@"thermalmonitord"]) {
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)ApplyThermals, CFSTR("com.rpetrich.powercuff.thermals"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-        %init(thermalmonitord);
-    } else if ([processName isEqualToString:@"SpringBoard"]) {
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)LoadSettings, CFSTR("com.rpetrich.powercuff.settingschanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-        LoadSettings();
-        %init(SpringBoard);
+        if ([processName isEqualToString:@"thermalmonitord"]) {
+            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)ApplyThermals, CFSTR("com.rpetrich.powercuff.thermals"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+            %init(thermalmonitord);
+        } else if ([processName isEqualToString:@"SpringBoard"]) {
+            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void *)LoadSettings, CFSTR("com.rpetrich.powercuff.settingschanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+            LoadSettings();
+            %init(SpringBoard);
+        }
     }
 }
