@@ -1,4 +1,4 @@
-name: Build Powercuff Rootless
+name: Build and Release Powercuff
 
 on:
   push:
@@ -18,7 +18,6 @@ jobs:
       - name: Install Dependencies
         run: |
           brew install ldid xz
-          # Ensures ldid is in the path for Theos
           echo "$(brew --prefix ldid)/bin" >> $GITHUB_PATH
 
       - name: Clean Ghost Submodules
@@ -40,8 +39,11 @@ jobs:
           export THEOS_PACKAGE_SCHEME=rootless
           make package FINALPACKAGE=1
         
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: Powercuff-Rootless-Deb
-          path: packages/*.deb
+          tag_name: v${{ github.run_number }}
+          name: Powercuff Rootless Build ${{ github.run_number }}
+          files: packages/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
